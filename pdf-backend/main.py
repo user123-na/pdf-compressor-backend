@@ -27,38 +27,47 @@ async def compress_pdf(
     percentage: int = Form(...)
 ):
     task_id = str(uuid.uuid4())
-    input_path = f"temp_{task_id}_in.pdf"
-    output_path = f"temp_{task_id}_out.pdf"
+    input_path = f"in_{task_id}.pdf"
+    output_path = f"out_{task_id}.pdf"
 
     with open(input_path, "wb") as buffer:
         buffer.write(await file.read())
 
-    # স্লাইডার অনুযায়ী গ্র্যানুলার কম্প্রেশন সেটিংস
-    # পার্সেন্টেজ যত বেশি, কোয়ালিটি তত কম (ফাইলের সাইজ তত ছোট)
+    # স্লাইডারের পার্সেন্টেজ অনুযায়ী DPI এবং কোয়ালিটি ডাইনামিকভাবে সেট করা
+    # ১০০% এর কাছাকাছি গেলে DPI একদম কমিয়ে দিবে (ফাইল ছোট করার জন্য)
+    target_dpi = 200 - (percentage * 1.5) # ৯০% হলে DPI হবে প্রায় ৬৫
+    
     if percentage >= 80:
-        pdf_settings, dpi = "/screen", 60   # সর্বোচ্চ কম্প্রেশন
-    elif percentage >= 60:
-        pdf_settings, dpi = "/screen", 90   # হাই কম্প্রেশন
-    elif percentage >= 40:
-        pdf_settings, dpi = "/ebook", 120   # মিডিয়াম কম্প্রেশন
-    elif percentage >= 20:
-        pdf_settings, dpi = "/printer", 150 # লো কম্প্রেশন
+        pdf_set = "/screen"
+    elif percentage >= 50:
+        pdf_set = "/ebook"
     else:
-        pdf_settings, dpi = "/prepress", 300 # নামমাত্র কম্প্রেশন
+        pdf_set = "/printer"
 
+    # অত্যন্ত শক্তিশালী কম্প্রেশন কমান্ড (টেক্সট ও ফন্ট অপ্টিমাইজেশনের জন্য)
     gs_command = [
         "gs", "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.4",
-        f"-dPDFSETTINGS={pdf_settings}",
+        f"-dPDFSETTINGS={pdf_set}",
         "-dNOPAUSE", "-dQUIET", "-dBATCH",
-        f"-dColorImageResolution={dpi}",
-        f"-dGrayImageResolution={dpi}",
-        f"-dMonoImageResolution={dpi}",
+        "-dEmbedAllFonts=false", # ফন্ট পুরোপুরি এম্বেড না করে ছোট করা
+        "-dSubsetFonts=true",    # শুধুমাত্র ব্যবহৃত অক্ষরগুলোর ফন্ট রাখা
+        "-dCompressFonts=true", # ফন্ট কম্প্রেস করা
+        "-dOptimize=true",      # ফাইল স্ট্রাকচার অপ্টিমাইজ করা
+        f"-dColorImageResolution={int(target_dpi)}",
+        f"-dGrayImageResolution={int(target_dpi)}",
+        f"-dMonoImageResolution={int(target_dpi)}",
         f"-sOutputFile={output_path}",
         input_path
     ]
 
     try:
         subprocess.run(gs_command, check=True)
+        
+        # যদি আউটপুট ফাইল ইনপুট ফাইলের চেয়ে বড় হয় (টেক্সট ফাইলের ক্ষেত্রে হতে পারে)
+        # তবে আমরা অরিজিনাল ফাইলটিই রিটার্ন করব যেন ইউজার ঠকে না যায়
+        if os.path.getsize(output_path) > os.path.getsize(input_path):
+            os.replace(input_path, output_path)
+            
     except Exception as e:
         cleanup_files(input_path)
         return {"error": str(e)}
