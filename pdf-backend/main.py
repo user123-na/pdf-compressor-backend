@@ -33,60 +33,65 @@ async def compress_pdf(
     input_path = f"in_{task_id}.pdf"
     output_path = f"out_{task_id}.pdf"
 
-    # ফাইলটি সেভ করা হচ্ছে
     with open(input_path, "wb") as buffer:
         buffer.write(await file.read())
 
-    # --- ইন্টেলিজেন্ট কোয়ালিটি কন্ট্রোল লজিক ---
-    # ইউজার যতটা পার্সেন্টেজ চাইবে, ইঞ্জিন ততটা চেষ্টা করবে, কিন্তু ফাইল ধ্বংস করবে না।
-    if percentage >= 80:
+    # --- প্রফেশনাল ব্রুট-ফোর্স লজিক (iLovePDF Style) ---
+    
+    if percentage >= 50:
+        # Extreme Compression (৫০% বা তার বেশি কমালে)
+        # টার্গেট: ফাইলকে যেকোনো মূল্যে ছোট করা। সাদা-কালো এবং একদম কম DPI.
         settings = "/screen"
-        dpi = 72    # ম্যাক্সিমাম কম্প্রেশন, কিন্তু পড়ার যোগ্য থাকবে
-    elif percentage >= 50:
-        settings = "/ebook"
-        dpi = 100   # স্ট্যান্ডার্ড কম্প্রেশন
+        dpi = 40
+        color_mode = "/DeviceGray" 
+    elif percentage >= 40:
+        # Medium Compression (৪০% থেকে ৪৯% কমালে)
+        # টার্গেট: ব্যালেন্সড সাইজ, কালার ঠিক থাকবে কিন্তু কোয়ালিটি কমবে।
+        settings = "/screen"
+        dpi = 72
+        color_mode = "/DeviceRGB"
     elif percentage >= 20:
-        settings = "/printer"
-        dpi = 150   # ভালো কোয়ালিটি
+        # Simple Compression (২০% থেকে ৩৯% কমালে)
+        # টার্গেট: ভালো কোয়ালিটি, সাধারণ সাইজ কমানো।
+        settings = "/ebook"
+        dpi = 120
+        color_mode = "/DeviceRGB"
     else:
-        settings = "/prepress"
-        dpi = 300   # হাই কোয়ালিটি
+        # Minimal (খুব কম কমালে)
+        settings = "/printer"
+        dpi = 150
+        color_mode = "/DeviceRGB"
 
     gs_command = [
         "gs", "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.4",
         f"-dPDFSETTINGS={settings}",
         "-dNOPAUSE", "-dQUIET", "-dBATCH",
-        "-dColorConversionStrategy=/DeviceRGB", # কালার নষ্ট হবে না
+        f"-dColorConversionStrategy={color_mode}",
         f"-dColorImageResolution={dpi}",
         f"-dGrayImageResolution={dpi}",
         f"-dMonoImageResolution={dpi}",
         "-dDownsampleColorImages=true",
-        "-dOptimize=true", # ফাইলের স্ট্রাকচার অপ্টিমাইজ করবে
+        "-dDownsampleGrayImages=true",
+        "-dDownsampleMonoImages=true",
+        "-dOptimize=true",
         f"-sOutputFile={output_path}",
         input_path
     ]
 
-    final_file_to_send = output_path
+    final_file = output_path
 
     try:
-        # Ghostscript দিয়ে কম্প্রেশন করার চেষ্টা
         subprocess.run(gs_command, check=True)
-        
-        # --- সেফটি চেক (ম্যাজিক লজিক) ---
-        # যদি কম্প্রেস করার পর ফাইল আগের চেয়েও বড় হয়ে যায় (অনেক পিডিএফ-এ এমন হয়)
+        # সেফটি চেক: যদি কোনো কারণে সাইজ না কমে, অরিজিনালটাই ব্যাকআপ হিসেবে থাকবে
         if os.path.getsize(output_path) >= os.path.getsize(input_path):
-            final_file_to_send = input_path # সেফলি অরিজিনাল ফাইলটি সিলেক্ট করা হলো
-            
-    except subprocess.CalledProcessError:
-        # যদি ইঞ্জিন কোনো কারণে ফেল করে (যেমন ফাইল করাপ্টেড), তবুও এরর দেবে না!
-        final_file_to_send = input_path
+            final_file = input_path
+    except:
+        final_file = input_path
 
-    # ফাইল পাঠানোর পর সার্ভার থেকে ডিলিট করার টাস্ক
     background_tasks.add_task(cleanup_files, input_path, output_path)
 
-    # সবশেষে ফাইলটি ফ্রন্টএন্ডে পাঠানো
     return FileResponse(
-        final_file_to_send, 
+        final_file, 
         media_type="application/pdf", 
         filename=f"compressed_{file.filename}"
     )
