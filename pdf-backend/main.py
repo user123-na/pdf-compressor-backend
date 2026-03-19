@@ -7,7 +7,6 @@ from fastapi.responses import FileResponse
 
 app = FastAPI()
 
-# CORS সেটিংস: যাতে আপনার লোকাল কম্পিউটার থেকে রেন্ডার সার্ভার এক্সেস করা যায়
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,70 +27,66 @@ def cleanup_files(*file_paths):
 async def compress_pdf(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    percentage: int = Form(...),
-    original_size: int = Form(...)
+    percentage: int = Form(...)
 ):
-    # ইউনিক ফাইলনেম তৈরি
     task_id = str(uuid.uuid4())
     input_path = f"in_{task_id}.pdf"
     output_path = f"out_{task_id}.pdf"
 
-    # আপলোড করা ফাইল সেভ করা
+    # ফাইলটি সেভ করা হচ্ছে
     with open(input_path, "wb") as buffer:
         buffer.write(await file.read())
 
-    # --- পার্সেন্টেজ অনুযায়ী ইন্টেলিজেন্ট লজিক ---
-    # ইউজার যতটা বেশি কমাতে চাইবে, আমরা রেজোলিউশন তত কমিয়ে দেব
+    # --- ইন্টেলিজেন্ট কোয়ালিটি কন্ট্রোল লজিক ---
+    # ইউজার যতটা পার্সেন্টেজ চাইবে, ইঞ্জিন ততটা চেষ্টা করবে, কিন্তু ফাইল ধ্বংস করবে না।
     if percentage >= 80:
-        dpi = 50
-        color_mode = "/DeviceGray"  # সাদা-কালো (সর্বোচ্চ কম্প্রেশন)
         settings = "/screen"
+        dpi = 72    # ম্যাক্সিমাম কম্প্রেশন, কিন্তু পড়ার যোগ্য থাকবে
     elif percentage >= 50:
-        dpi = 72
-        color_mode = "/DeviceRGB"   # রঙিন কিন্তু লো-কোয়ালিটি
-        settings = "/screen"
-    elif percentage >= 20:
-        dpi = 120
-        color_mode = "/DeviceRGB"   # মিডিয়াম কোয়ালিটি
         settings = "/ebook"
-    else:
-        dpi = 200
-        color_mode = "/DeviceRGB"   # হাই কোয়ালিটি
+        dpi = 100   # স্ট্যান্ডার্ড কম্প্রেশন
+    elif percentage >= 20:
         settings = "/printer"
+        dpi = 150   # ভালো কোয়ালিটি
+    else:
+        settings = "/prepress"
+        dpi = 300   # হাই কোয়ালিটি
 
-    # Ghostscript কমান্ড (Aggressive Compression)
     gs_command = [
         "gs", "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.4",
         f"-dPDFSETTINGS={settings}",
         "-dNOPAUSE", "-dQUIET", "-dBATCH",
-        f"-dColorConversionStrategy={color_mode}",
+        "-dColorConversionStrategy=/DeviceRGB", # কালার নষ্ট হবে না
         f"-dColorImageResolution={dpi}",
         f"-dGrayImageResolution={dpi}",
         f"-dMonoImageResolution={dpi}",
         "-dDownsampleColorImages=true",
-        "-dOptimize=true",
-        "-dEmbedAllFonts=false",
-        "-dSubsetFonts=true",
+        "-dOptimize=true", # ফাইলের স্ট্রাকচার অপ্টিমাইজ করবে
         f"-sOutputFile={output_path}",
         input_path
     ]
 
+    final_file_to_send = output_path
+
     try:
+        # Ghostscript দিয়ে কম্প্রেশন করার চেষ্টা
         subprocess.run(gs_command, check=True)
         
-        # যদি কোনো কারণে আউটপুট বড় হয়, তবে অরিজিনালটাই ব্যাকআপ হিসেবে দেব
-        if os.path.getsize(output_path) > os.path.getsize(input_path):
-            os.replace(input_path, output_path)
+        # --- সেফটি চেক (ম্যাজিক লজিক) ---
+        # যদি কম্প্রেস করার পর ফাইল আগের চেয়েও বড় হয়ে যায় (অনেক পিডিএফ-এ এমন হয়)
+        if os.path.getsize(output_path) >= os.path.getsize(input_path):
+            final_file_to_send = input_path # সেফলি অরিজিনাল ফাইলটি সিলেক্ট করা হলো
             
-    except Exception as e:
-        cleanup_files(input_path)
-        return {"error": str(e)}
+    except subprocess.CalledProcessError:
+        # যদি ইঞ্জিন কোনো কারণে ফেল করে (যেমন ফাইল করাপ্টেড), তবুও এরর দেবে না!
+        final_file_to_send = input_path
 
-    # কাজ শেষ হলে ফাইল ডিলিট করার টাস্ক
+    # ফাইল পাঠানোর পর সার্ভার থেকে ডিলিট করার টাস্ক
     background_tasks.add_task(cleanup_files, input_path, output_path)
 
+    # সবশেষে ফাইলটি ফ্রন্টএন্ডে পাঠানো
     return FileResponse(
-        output_path, 
+        final_file_to_send, 
         media_type="application/pdf", 
         filename=f"compressed_{file.filename}"
     )
