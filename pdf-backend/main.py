@@ -9,7 +9,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # এটি সব জায়গা থেকে রিকোয়েস্ট অ্যাক্সেপ্ট করবে
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -27,28 +27,29 @@ async def compress_pdf(
     percentage: int = Form(...)
 ):
     task_id = str(uuid.uuid4())
-    input_path = f"temp_input_{task_id}.pdf"
-    output_path = f"temp_output_{task_id}.pdf"
+    input_path = f"temp_{task_id}_in.pdf"
+    output_path = f"temp_{task_id}_out.pdf"
 
     with open(input_path, "wb") as buffer:
         buffer.write(await file.read())
 
-    if percentage >= 70:
-        pdf_settings, dpi = "/screen", 72
+    # স্লাইডার অনুযায়ী গ্র্যানুলার কম্প্রেশন সেটিংস
+    # পার্সেন্টেজ যত বেশি, কোয়ালিটি তত কম (ফাইলের সাইজ তত ছোট)
+    if percentage >= 80:
+        pdf_settings, dpi = "/screen", 60   # সর্বোচ্চ কম্প্রেশন
+    elif percentage >= 60:
+        pdf_settings, dpi = "/screen", 90   # হাই কম্প্রেশন
     elif percentage >= 40:
-        pdf_settings, dpi = "/ebook", 100
+        pdf_settings, dpi = "/ebook", 120   # মিডিয়াম কম্প্রেশন
+    elif percentage >= 20:
+        pdf_settings, dpi = "/printer", 150 # লো কম্প্রেশন
     else:
-        pdf_settings, dpi = "/printer", 150
+        pdf_settings, dpi = "/prepress", 300 # নামমাত্র কম্প্রেশন
 
-    # Render লিনাক্স সার্ভার, তাই কমান্ড হবে শুধু "gs"
     gs_command = [
-        "gs", 
-        "-sDEVICE=pdfwrite",
-        "-dCompatibilityLevel=1.4",
+        "gs", "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.4",
         f"-dPDFSETTINGS={pdf_settings}",
-        "-dNOPAUSE",
-        "-dQUIET",
-        "-dBATCH",
+        "-dNOPAUSE", "-dQUIET", "-dBATCH",
         f"-dColorImageResolution={dpi}",
         f"-dGrayImageResolution={dpi}",
         f"-dMonoImageResolution={dpi}",
@@ -58,9 +59,9 @@ async def compress_pdf(
 
     try:
         subprocess.run(gs_command, check=True)
-    except subprocess.CalledProcessError:
-        cleanup_files(input_path, output_path)
-        return {"error": "Compression failed."}
+    except Exception as e:
+        cleanup_files(input_path)
+        return {"error": str(e)}
 
     background_tasks.add_task(cleanup_files, input_path, output_path)
 
