@@ -1,6 +1,6 @@
 import os
 import uuid
-import subprocess
+import fitz  # PyMuPDF (সবচেয়ে শক্তিশালী ইঞ্জিন)
 from fastapi import FastAPI, File, UploadFile, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -33,65 +33,65 @@ async def compress_pdf(
     input_path = f"in_{task_id}.pdf"
     output_path = f"out_{task_id}.pdf"
 
+    # ফাইল সেভ করা
     with open(input_path, "wb") as buffer:
         buffer.write(await file.read())
 
-    # --- প্রফেশনাল ব্রুট-ফোর্স লজিক (iLovePDF Style) ---
-    
-    if percentage >= 50:
-        # Extreme Compression (৫০% বা তার বেশি কমালে)
-        # টার্গেট: ফাইলকে যেকোনো মূল্যে ছোট করা। সাদা-কালো এবং একদম কম DPI.
-        settings = "/screen"
-        dpi = 40
-        color_mode = "/DeviceGray" 
-    elif percentage >= 40:
-        # Medium Compression (৪০% থেকে ৪৯% কমালে)
-        # টার্গেট: ব্যালেন্সড সাইজ, কালার ঠিক থাকবে কিন্তু কোয়ালিটি কমবে।
-        settings = "/screen"
-        dpi = 72
-        color_mode = "/DeviceRGB"
-    elif percentage >= 20:
-        # Simple Compression (২০% থেকে ৩৯% কমালে)
-        # টার্গেট: ভালো কোয়ালিটি, সাধারণ সাইজ কমানো।
-        settings = "/ebook"
-        dpi = 120
-        color_mode = "/DeviceRGB"
-    else:
-        # Minimal (খুব কম কমালে)
-        settings = "/printer"
-        dpi = 150
-        color_mode = "/DeviceRGB"
-
-    gs_command = [
-        "gs", "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.4",
-        f"-dPDFSETTINGS={settings}",
-        "-dNOPAUSE", "-dQUIET", "-dBATCH",
-        f"-dColorConversionStrategy={color_mode}",
-        f"-dColorImageResolution={dpi}",
-        f"-dGrayImageResolution={dpi}",
-        f"-dMonoImageResolution={dpi}",
-        "-dDownsampleColorImages=true",
-        "-dDownsampleGrayImages=true",
-        "-dDownsampleMonoImages=true",
-        "-dOptimize=true",
-        f"-sOutputFile={output_path}",
-        input_path
-    ]
-
-    final_file = output_path
-
     try:
-        subprocess.run(gs_command, check=True)
-        # সেফটি চেক: যদি কোনো কারণে সাইজ না কমে, অরিজিনালটাই ব্যাকআপ হিসেবে থাকবে
-        if os.path.getsize(output_path) >= os.path.getsize(input_path):
-            final_file = input_path
-    except:
-        final_file = input_path
+        # পিডিএফ ওপেন করা হচ্ছে
+        doc = fitz.open(input_path)
+        out_pdf = fitz.open()
 
+        # --- ব্রুট-ফোর্স লজিক (দয়া-মায়া ছাড়া সাইজ কমানো) ---
+        # পার্সেন্টেজ যত বাড়বে, জুম (Zoom) এবং কোয়ালিটি (Quality) তত কমবে
+        
+        if percentage >= 90:
+            zoom = 0.5       # রেজোলিউশন অর্ধেক করে দেওয়া হবে
+            jpg_quality = 5  # চরম বাজে কোয়ালিটি, কিন্তু সাইজ গ্যারান্টি দিয়ে কমবে
+        elif percentage >= 70:
+            zoom = 0.7
+            jpg_quality = 20
+        elif percentage >= 50:
+            zoom = 0.9
+            jpg_quality = 40
+        elif percentage >= 30:
+            zoom = 1.0
+            jpg_quality = 60
+        else:
+            zoom = 1.2
+            jpg_quality = 80
+
+        mat = fitz.Matrix(zoom, zoom)
+
+        # প্রতিটি পাতাকে স্ক্যান করে জোরপূর্বক ছবি (JPEG) তে কনভার্ট করা হচ্ছে
+        for page in doc:
+            # পাতাকে ছবি বানানো হচ্ছে
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            
+            # ছবির সাইজ পার্সেন্টেজ অনুযায়ী কমানো হচ্ছে
+            img_bytes = pix.tobytes("jpeg", jpg_quality=jpg_quality)
+            
+            # সেই ছোট সাইজের ছবিকে আবার পিডিএফের পাতা বানানো হচ্ছে
+            imgdoc = fitz.open("jpeg", img_bytes)
+            pdfbytes = imgdoc.convert_to_pdf()
+            imgpdf = fitz.open("pdf", pdfbytes)
+            out_pdf.insert_pdf(imgpdf)
+
+        # সর্বোচ্চ কম্প্রেশন মেথড দিয়ে সেভ করা
+        out_pdf.save(output_path, garbage=4, deflate=True)
+        out_pdf.close()
+        doc.close()
+
+    except Exception as e:
+        # কোনো এরর হলে অরিজিনাল ফাইলটাই ব্যাকআপ হিসেবে রিটার্ন করবে
+        if os.path.exists(input_path):
+            os.rename(input_path, output_path)
+
+    # কাজ শেষে ডিলিট
     background_tasks.add_task(cleanup_files, input_path, output_path)
 
     return FileResponse(
-        final_file, 
+        output_path, 
         media_type="application/pdf", 
         filename=f"compressed_{file.filename}"
     )
